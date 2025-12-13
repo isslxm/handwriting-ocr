@@ -1,194 +1,341 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageTk, ImageEnhance, ImageFilter
+from tkinter import messagebox
+from PIL import Image, ImageTk
 import pytesseract
 import cv2
 import numpy as np
-import os
+import threading
+import time
 
-class HandwrittenOCR:
+
+class SimpleCameraOCR:
     def __init__(self, root):
         self.root = root
-        self.root.title("Handwritten Recognition System - OCR")
+        self.root.title("Camera OCR System")
         self.root.geometry("1200x700")
-        self.root.configure(bg="#f0f0f0")
-        
-        # Переменные
-        self.original_image = None
-        self.processed_image = None
-        self.image_path = None
-        
+        self.root.configure(bg="#2c3e50")
+
+        self.camera = None
+        self.camera_active = False
+        self.realtime_ocr = False
+        self.current_frame = None
+
+        # Проверяем Tesseract
+        self.check_tesseract()
+
         # Создаем интерфейс
         self.create_widgets()
-        
+
+        # Обработка закрытия
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def check_tesseract(self):
+        """Проверка Tesseract"""
+        try:
+            pytesseract.get_tesseract_version()
+            print("✓ Tesseract OK")
+        except:
+            messagebox.showerror(
+                "Ошибка",
+                "Tesseract не найден!\n\n"
+                "Установите:\n"
+                "sudo pacman -S tesseract tesseract-data-eng tesseract-data-rus"
+            )
+            self.root.quit()
+
     def create_widgets(self):
         # Заголовок
-        title_frame = tk.Frame(self.root, bg="#2c3e50", height=60)
+        title_frame = tk.Frame(self.root, bg="#34495e", height=70)
         title_frame.pack(fill=tk.X)
-        
-        title_label = tk.Label(
+        title_frame.pack_propagate(False)
+
+        tk.Label(
             title_frame,
-            text="📝 Handwritten Recognition System",
-            font=("Arial", 20, "bold"),
-            bg="#2c3e50",
+            text="📹 Camera OCR System",
+            font=("Arial", 24, "bold"),
+            bg="#34495e",
+            fg="white"
+        ).pack(pady=18)
+
+        # Основной контейнер
+        main_container = tk.Frame(self.root, bg="#2c3e50")
+        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        # Левая панель - камера
+        left_frame = tk.Frame(main_container, bg="#34495e", relief=tk.FLAT)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        camera_label = tk.Label(
+            left_frame,
+            text="📷 Камера",
+            font=("Arial", 16, "bold"),
+            bg="#34495e",
             fg="white"
         )
-        title_label.pack(pady=15)
-        
-        # Основной контейнер
-        main_container = tk.Frame(self.root, bg="#f0f0f0")
-        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Левая панель - изображение
-        left_frame = tk.Frame(main_container, bg="white", relief=tk.RIDGE, bd=2)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        
-        tk.Label(
+        camera_label.pack(pady=10)
+
+        # Canvas для камеры
+        self.camera_canvas = tk.Canvas(
             left_frame,
-            text="Изображение",
-            font=("Arial", 14, "bold"),
-            bg="white"
-        ).pack(pady=10)
-        
-        # Canvas для изображения
-        self.image_canvas = tk.Canvas(left_frame, bg="#e0e0e0", highlightthickness=0)
-        self.image_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Правая панель - результат
-        right_frame = tk.Frame(main_container, bg="white", relief=tk.RIDGE, bd=2)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        
-        tk.Label(
+            bg="#2c3e50",
+            highlightthickness=0
+        )
+        self.camera_canvas.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+
+        # Правая панель - текст
+        right_frame = tk.Frame(main_container, bg="#34495e", relief=tk.FLAT)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        text_label = tk.Label(
             right_frame,
-            text="Распознанный текст",
-            font=("Arial", 14, "bold"),
-            bg="white"
-        ).pack(pady=10)
-        
-        # Текстовое поле с прокруткой
-        text_frame = tk.Frame(right_frame)
-        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        scrollbar = tk.Scrollbar(text_frame)
+            text="📝 Распознанный текст",
+            font=("Arial", 16, "bold"),
+            bg="#34495e",
+            fg="white"
+        )
+        text_label.pack(pady=10)
+
+        # Текстовое поле
+        text_container = tk.Frame(right_frame, bg="#34495e")
+        text_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+
+        scrollbar = tk.Scrollbar(text_container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         self.result_text = tk.Text(
-            text_frame,
+            text_container,
             wrap=tk.WORD,
-            font=("Arial", 11),
-            yscrollcommand=scrollbar.set
+            font=("Courier New", 12),
+            bg="#ecf0f1",
+            fg="#2c3e50",
+            yscrollcommand=scrollbar.set,
+            padx=10,
+            pady=10
         )
         self.result_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.result_text.yview)
-        
+
         # Панель управления
-        control_frame = tk.Frame(self.root, bg="#ecf0f1", height=100)
-        control_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
-        
-        # Кнопки
-        button_frame = tk.Frame(control_frame, bg="#ecf0f1")
-        button_frame.pack(pady=15)
-        
-        buttons = [
-            ("📁 Загрузить изображение", self.load_image, "#3498db"),
-            ("🔍 Распознать текст", self.recognize_text, "#2ecc71"),
-            ("🎨 Обработать изображение", self.preprocess_image, "#e67e22"),
-            ("💾 Сохранить текст", self.save_text, "#9b59b6"),
-            ("🗑️ Очистить", self.clear_all, "#e74c3c")
-        ]
-        
-        for text, command, color in buttons:
-            btn = tk.Button(
-                button_frame,
-                text=text,
-                command=command,
-                font=("Arial", 10, "bold"),
-                bg=color,
-                fg="white",
-                width=20,
-                height=2,
-                relief=tk.RAISED,
-                cursor="hand2"
-            )
-            btn.pack(side=tk.LEFT, padx=5)
-            
-        # Параметры обработки
-        params_frame = tk.LabelFrame(
-            control_frame,
-            text="Параметры обработки",
-            font=("Arial", 10, "bold"),
-            bg="#ecf0f1"
+        control_frame = tk.Frame(self.root, bg="#34495e", height=100)
+        control_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
+        control_frame.pack_propagate(False)
+
+        button_container = tk.Frame(control_frame, bg="#34495e")
+        button_container.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        # Кнопка камеры
+        self.camera_btn = tk.Button(
+            button_container,
+            text="📹 Включить камеру",
+            command=self.toggle_camera,
+            font=("Arial", 13, "bold"),
+            bg="#27ae60",
+            fg="white",
+            width=20,
+            height=2,
+            relief=tk.FLAT,
+            cursor="hand2",
+            activebackground="#229954"
         )
-        params_frame.pack(pady=5)
-        
-        tk.Label(params_frame, text="Язык:", bg="#ecf0f1").grid(row=0, column=0, padx=5, pady=5)
-        self.lang_var = tk.StringVar(value="rus+eng")
-        lang_combo = ttk.Combobox(
-            params_frame,
-            textvariable=self.lang_var,
-            values=["rus", "eng", "rus+eng"],
+        self.camera_btn.pack(side=tk.LEFT, padx=10)
+
+        # Кнопка OCR
+        self.ocr_btn = tk.Button(
+            button_container,
+            text="🔍 Распознать текст",
+            command=self.recognize_once,
+            font=("Arial", 13, "bold"),
+            bg="#3498db",
+            fg="white",
+            width=20,
+            height=2,
+            relief=tk.FLAT,
+            cursor="hand2",
+            activebackground="#2980b9",
+            state=tk.DISABLED
+        )
+        self.ocr_btn.pack(side=tk.LEFT, padx=10)
+
+        # Кнопка очистки
+        clear_btn = tk.Button(
+            button_container,
+            text="🗑️ Очистить",
+            command=self.clear_text,
+            font=("Arial", 13, "bold"),
+            bg="#e74c3c",
+            fg="white",
             width=15,
-            state="readonly"
+            height=2,
+            relief=tk.FLAT,
+            cursor="hand2",
+            activebackground="#c0392b"
         )
-        lang_combo.grid(row=0, column=1, padx=5, pady=5)
-        
-    def load_image(self):
-        """Загрузка изображения"""
-        file_path = filedialog.askopenfilename(
-            title="Выберите изображение",
-            filetypes=[
-                ("Изображения", "*.png *.jpg *.jpeg *.bmp *.tiff"),
-                ("Все файлы", "*.*")
-            ]
-        )
-        
-        if file_path:
-            try:
-                self.image_path = file_path
-                self.original_image = cv2.imread(file_path)
-                self.processed_image = self.original_image.copy()
-                self.display_image(self.original_image)
-                self.result_text.delete(1.0, tk.END)
-                self.result_text.insert(1.0, "✓ Изображение загружено. Нажмите 'Распознать текст' для OCR.")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось загрузить изображение:\n{str(e)}")
-    
-    def display_image(self, cv_image):
-        """Отображение изображения на canvas"""
-        # Конвертируем BGR в RGB
-        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_image)
-        
-        # Масштабируем под размер canvas
-        canvas_width = self.image_canvas.winfo_width()
-        canvas_height = self.image_canvas.winfo_height()
-        
-        if canvas_width > 1 and canvas_height > 1:
-            pil_image.thumbnail((canvas_width - 20, canvas_height - 20), Image.Resampling.LANCZOS)
-        
-        self.photo = ImageTk.PhotoImage(pil_image)
-        self.image_canvas.delete("all")
-        self.image_canvas.create_image(
-            canvas_width // 2,
-            canvas_height // 2,
-            image=self.photo,
-            anchor=tk.CENTER
-        )
-    
-    def preprocess_image(self):
-        """Предобработка изображения для улучшения распознавания"""
-        if self.original_image is None:
-            messagebox.showwarning("Внимание", "Сначала загрузите изображение!")
-            return
-        
+        clear_btn.pack(side=tk.LEFT, padx=10)
+
+    def toggle_camera(self):
+        """Включить/выключить камеру"""
+        if not self.camera_active:
+            self.start_camera()
+        else:
+            self.stop_camera()
+
+    def start_camera(self):
+        """Запуск камеры"""
         try:
-            # Конвертируем в оттенки серого
-            gray = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
-            
-            # Применяем гауссово размытие для уменьшения шума
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            
-            # Адаптивная бинаризация
+            self.camera = cv2.VideoCapture(0)
+
+            if not self.camera.isOpened():
+                messagebox.showerror("Ошибка", "Не удалось открыть камеру!")
+                return
+
+            # Настройки камеры для лучшей производительности
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.camera.set(cv2.CAP_PROP_FPS, 30)
+
+            self.camera_active = True
+            self.camera_btn.config(
+                text="⏹️ Выключить камеру",
+                bg="#e74c3c",
+                activebackground="#c0392b"
+            )
+            self.ocr_btn.config(state=tk.NORMAL)
+
+            # Запускаем поток для видео
+            self.video_thread = threading.Thread(target=self.video_loop, daemon=True)
+            self.video_thread.start()
+
+            print("✓ Камера запущена")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось запустить камеру:\n{str(e)}")
+
+    def stop_camera(self):
+        """Остановка камеры"""
+        self.camera_active = False
+
+        if self.camera:
+            self.camera.release()
+            self.camera = None
+
+        self.camera_btn.config(
+            text="📹 Включить камеру",
+            bg="#27ae60",
+            activebackground="#229954"
+        )
+        self.ocr_btn.config(state=tk.DISABLED)
+
+        # Удаляем ID изображения
+        if hasattr(self, 'canvas_image_id'):
+            self.canvas_image_id = None
+
+        self.camera_canvas.delete("all")
+
+        print("✓ Камера остановлена")
+
+    def video_loop(self):
+        """Цикл захвата видео"""
+        while self.camera_active:
+            ret, frame = self.camera.read()
+
+            if ret:
+                # Отзеркаливаем
+                frame = cv2.flip(frame, 1)
+                self.current_frame = frame.copy()
+
+                # Отображаем
+                self.display_frame(frame)
+
+            # Задержка для ~30 FPS
+            time.sleep(0.033)
+
+    def display_frame(self, frame):
+        """Отображение кадра"""
+        if not self.camera_active:
+            return
+
+        try:
+            # BGR -> RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
+
+            # Получаем размеры canvas
+            canvas_width = self.camera_canvas.winfo_width()
+            canvas_height = self.camera_canvas.winfo_height()
+
+            # Масштабируем, сохраняя пропорции
+            if canvas_width > 1 and canvas_height > 1:
+                # Вычисляем соотношение сторон
+                img_ratio = pil_image.width / pil_image.height
+                canvas_ratio = canvas_width / canvas_height
+
+                if img_ratio > canvas_ratio:
+                    # Ограничиваем по ширине
+                    new_width = canvas_width - 20
+                    new_height = int(new_width / img_ratio)
+                else:
+                    # Ограничиваем по высоте
+                    new_height = canvas_height - 20
+                    new_width = int(new_height * img_ratio)
+
+                pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            # Конвертируем для tkinter
+            photo = ImageTk.PhotoImage(pil_image)
+
+            # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: создаем изображение ОДИН раз, потом только обновляем
+            if not hasattr(self, 'canvas_image_id') or self.canvas_image_id is None:
+                # Первый кадр - создаем изображение
+                self.canvas_image_id = self.camera_canvas.create_image(
+                    canvas_width // 2,
+                    canvas_height // 2,
+                    image=photo,
+                    anchor=tk.CENTER
+                )
+            else:
+                # Последующие кадры - только обновляем
+                self.camera_canvas.coords(
+                    self.canvas_image_id,
+                    canvas_width // 2,
+                    canvas_height // 2
+                )
+                self.camera_canvas.itemconfig(self.canvas_image_id, image=photo)
+
+            # Сохраняем ссылку чтобы изображение не удалилось
+            self.camera_canvas.image = photo
+
+        except Exception as e:
+            print(f"Ошибка отображения: {e}")
+
+    def recognize_once(self):
+        """Распознать текст с текущего кадра"""
+        if self.current_frame is None:
+            return
+
+        # Запускаем в отдельном потоке чтобы не тормозить интерфейс
+        ocr_thread = threading.Thread(target=self.process_ocr, daemon=True)
+        ocr_thread.start()
+
+    def process_ocr(self):
+        """Обработка OCR"""
+        try:
+            # Показываем процесс
+            self.result_text.delete(1.0, tk.END)
+            self.result_text.insert(1.0, "⏳ Распознавание текста...\n")
+
+            # Копируем кадр
+            frame = self.current_frame.copy()
+
+            # Предобработка
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Увеличиваем контраст
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+
+            # Размытие для удаления шума
+            blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+
+            # Бинаризация
             thresh = cv2.adaptiveThreshold(
                 blurred,
                 255,
@@ -197,89 +344,56 @@ class HandwrittenOCR:
                 11,
                 2
             )
-            
-            # Морфологические операции для очистки
+
+            # Морфологическая очистка
             kernel = np.ones((2, 2), np.uint8)
             processed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-            processed = cv2.morphologyEx(processed, cv2.MORPH_OPEN, kernel)
-            
-            # Конвертируем обратно в BGR для отображения
-            self.processed_image = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-            self.display_image(self.processed_image)
-            
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(1.0, "✓ Изображение обработано. Теперь можно распознать текст.")
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка при обработке:\n{str(e)}")
-    
-    def recognize_text(self):
-        """Распознавание текста с помощью Tesseract"""
-        if self.processed_image is None:
-            messagebox.showwarning("Внимание", "Сначала загрузите изображение!")
-            return
-        
-        try:
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(1.0, "⏳ Распознавание текста...\n")
-            self.root.update()
-            
-            # Конфигурация Tesseract
+
+            # OCR
             custom_config = r'--oem 3 --psm 6'
-            lang = self.lang_var.get()
-            
-            # Распознавание
             text = pytesseract.image_to_string(
-                self.processed_image,
-                lang=lang,
+                processed,
+                lang='rus+eng',
                 config=custom_config
             )
-            
+
+            # Выводим результат
             self.result_text.delete(1.0, tk.END)
-            
+
             if text.strip():
-                self.result_text.insert(1.0, f"✓ Распознавание завершено!\n\n{text}")
+                self.result_text.insert(1.0, f"✅ Текст распознан:\n\n{text}")
+                print(f"✓ Распознано {len(text)} символов")
             else:
-                self.result_text.insert(1.0, "⚠️ Текст не распознан. Попробуйте:\n"
-                                           "1. Обработать изображение\n"
-                                           "2. Использовать более качественное изображение\n"
-                                           "3. Проверить язык распознавания")
+                self.result_text.insert(1.0, "❌ Текст не обнаружен\n\n"
+                                             "Советы:\n"
+                                             "• Поднесите текст ближе к камере\n"
+                                             "• Убедитесь в хорошем освещении\n"
+                                             "• Держите камеру стабильно\n"
+                                             "• Используйте четкий текст")
+
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка распознавания:\n{str(e)}")
-    
-    def save_text(self):
-        """Сохранение распознанного текста"""
-        text = self.result_text.get(1.0, tk.END).strip()
-        
-        if not text or text.startswith("✓") or text.startswith("⏳"):
-            messagebox.showwarning("Внимание", "Нет текста для сохранения!")
-            return
-        
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")]
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(text)
-                messagebox.showinfo("Успех", "Текст успешно сохранен!")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{str(e)}")
-    
-    def clear_all(self):
-        """Очистка всех данных"""
-        self.original_image = None
-        self.processed_image = None
-        self.image_path = None
-        self.image_canvas.delete("all")
+            self.result_text.delete(1.0, tk.END)
+            self.result_text.insert(1.0, f"❌ Ошибка распознавания:\n\n{str(e)}")
+            print(f"✗ Ошибка OCR: {e}")
+
+    def clear_text(self):
+        """Очистить текст"""
         self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(1.0, "Все очищено. Загрузите новое изображение.")
+        self.result_text.insert(1.0, "Текст очищен")
+
+    def on_closing(self):
+        """Закрытие приложения"""
+        if self.camera_active:
+            self.stop_camera()
+        cv2.destroyAllWindows()
+        self.root.destroy()
+
 
 def main():
     root = tk.Tk()
-    app = HandwrittenOCR(root)
+    app = SimpleCameraOCR(root)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
